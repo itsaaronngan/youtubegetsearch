@@ -1,64 +1,68 @@
 from googleapiclient.discovery import build
-import sys
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 import isodate
 from datetime import datetime, timedelta
+import os
 
-def youtube_search(search_term, max_results, time_filter):
-    api_key = 'YO PUT YOUR API KEY HERE'
-    youtube = build('youtube', 'v3', developerKey=api_key)
+# Function to set up YouTube client with OAuth2
+def get_authenticated_service():
+    SCOPES = ['https://www.googleapis.com/auth/youtube.readonly']
+    CLIENT_SECRETS_FILE = 'client_secrets.json'  # Path to your client_secrets.json file
 
-    # Determine the time range for filtering
-    if time_filter == 'W':
-        published_after = datetime.now() - timedelta(weeks=1)
-    elif time_filter == 'M':
-        published_after = datetime.now() - timedelta(days=30)  # Approximate month
-    elif time_filter == 'Y':
-        published_after = datetime.now() - timedelta(days=365)  # Approximate year
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first time.
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    return build('youtube', 'v3', credentials=creds)
+
+# Function to search YouTube videos
+def youtube_search(youtube, search_term, max_results, time_filter):
+    published_after = datetime.now() - timedelta(weeks=1) if time_filter == 'W' \
+        else datetime.now() - timedelta(days=30) if time_filter == 'M' \
+        else datetime.now() - timedelta(days=365) if time_filter == 'Y' \
+        else None
+
+    if published_after:
+        published_after_str = published_after.isoformat("T") + "Z"
     else:
         raise ValueError("Time filter must be 'W', 'M', or 'Y'")
 
-    published_after_str = published_after.isoformat("T") + "Z"  # Format for YouTube API
+    response = youtube.search().list(
+        q=search_term,
+        part='id,snippet',
+        maxResults=max_results,
+        type='video',
+        publishedAfter=published_after_str,
+        relevanceLanguage='en'
+    ).execute()
 
-    videos = []
-    page_token = None
-    while len(videos) < max_results:
-        search_response = youtube.search().list(
-            q=search_term,
-            part='id,snippet',
-            maxResults=50,  # Fetch up to 50 results at a time
-            type='video',
-            publishedAfter=published_after_str,
-            relevanceLanguage='en',  # Filter for English language videos
-            pageToken=page_token
-        ).execute()
+    for item in response['items']:
+        video_id = item['id']['videoId']
+        print(f'Video ID: {video_id}')
 
-        for search_result in search_response.get('items', []):
-            if search_result['id']['kind'] == 'youtube#video':
-                video_id = search_result['id']['videoId']
-                video_details = youtube.videos().list(
-                    id=video_id,
-                    part='contentDetails'
-                ).execute()
+# Main function
+if __name__ == '__main__':
+    # Setting up OAuth2 authenticated YouTube client
+    youtube = get_authenticated_service()
 
-                iso_duration = video_details['items'][0]['contentDetails']['duration']
-                duration = isodate.parse_duration(iso_duration)
-                if duration.total_seconds() >= 60:  # Exclude Shorts
-                    videos.append(f"https://www.youtube.com/watch?v={video_id}")
+    # Example usage of the YouTube search function
+    search_term = "example search term"  # Replace with your search term
+    max_results = 10  # Set the number of results
+    time_filter = 'W'  # Set the time filter (W, M, Y)
 
-                if len(videos) == max_results:
-                    break
-
-        if 'nextPageToken' in search_response:
-            page_token = search_response['nextPageToken']
-        else:
-            break  # Exit if there are no more results
-
-    return videos
-
-if __name__ == "__main__":
-    search_term = ' '.join(sys.argv[1:-2]).strip('<>')
-    max_results = int(sys.argv[-2])
-    time_filter = sys.argv[-1]
-    results = youtube_search(search_term, max_results, time_filter)
-    for url in results:
-        print(url)
+    youtube_search(youtube, search_term, max_results, time_filter)
